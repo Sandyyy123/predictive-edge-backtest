@@ -227,6 +227,43 @@ def permutation_test(X, y, model_fp, score_fn, n_perm=30, seed=0):
     return real, p, null
 
 
+def selection_bias_demo(seed=11, hurdle=0.05):
+    """Demonstrate the #1 killer of a phantom edge: survivorship / selection bias.
+
+    Only a minority of lots ever RESELL, and winners resell disproportionately.
+    A model trained only on the resold subset over-states returns. We show the
+    gap between the naive (resold-only) mean ROI and an inverse-propensity-
+    weighted estimate that corrects for who gets to resell.
+    Grounded in Korteweg, Kraussl & Verwijmeren (RFS 2016): correcting selection
+    cut art returns ~8.7% -> 6.3% and Sharpe ~0.27 -> 0.11.
+    """
+    X, _, log_roi, names, meta = synthetic_auctions(n=8000, seed=seed, hurdle=hurdle)
+
+    # Resale probability rises with realized return (winners resell) + rarity.
+    rng = np.random.default_rng(seed + 1)
+    rarity = X[:, 5]
+    p_resold = 1.0 / (1.0 + np.exp(-(-1.4 + 2.2 * log_roi + 1.0 * rarity)))
+    resold = (rng.uniform(size=len(log_roi)) < p_resold).astype(int)
+
+    resold_frac = resold.mean()
+    naive = log_roi[resold == 1].mean()                 # what a naive study sees
+    true_pop = log_roi.mean()                            # the real population mean
+
+    # Inverse-propensity-weighted correction (fit P(resold) on features only).
+    from math import isfinite
+    w = 1.0 / np.clip(p_resold[resold == 1], 0.02, 1.0)
+    ipw = np.average(log_roi[resold == 1], weights=w)
+
+    print("\n=== 5. Selection / survivorship bias (the #1 killer) ===")
+    print(f"  Resold fraction (the observable subset) = {resold_frac:.1%}")
+    print(f"  Naive mean net log-ROI on resold-only    = {naive:+.4f}  <- biased UP")
+    print(f"  IPW-corrected mean net log-ROI           = {ipw:+.4f}")
+    print(f"  True population mean net log-ROI         = {true_pop:+.4f}")
+    print(f"  Survivorship premium removed by correction = {naive - ipw:+.4f}")
+    print("  Lesson: never train/score only on assets that resold; model P(resold)")
+    print("  as a first stage and report uncorrected vs corrected ROI both.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Auction mispricing / forward-ROI analysis")
     ap.add_argument("--csv")
@@ -280,6 +317,8 @@ def main():
           f"| p-value = {p:.3f}")
     print("  Interpretation:", "edge unlikely to be luck (p<0.05)" if p < 0.05
           else "edge NOT distinguishable from luck - report as NO EDGE")
+
+    selection_bias_demo()
 
 
 if __name__ == "__main__":
