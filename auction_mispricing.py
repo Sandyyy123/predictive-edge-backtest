@@ -228,40 +228,54 @@ def permutation_test(X, y, model_fp, score_fn, n_perm=30, seed=0):
 
 
 def selection_bias_demo(seed=11, hurdle=0.05):
-    """Demonstrate the #1 killer of a phantom edge: survivorship / selection bias.
+    """Demonstrate the #1 killer of a phantom edge: survivorship / selection bias,
+    HONESTLY - including why it is only partially fixable from observed data.
 
     Only a minority of lots ever RESELL, and winners resell disproportionately.
-    A model trained only on the resold subset over-states returns. We show the
-    gap between the naive (resold-only) mean ROI and an inverse-propensity-
-    weighted estimate that corrects for who gets to resell.
+    Critically, that selection is driven by the OUTCOME (the realized return),
+    which is not knowable at the decision point -> the missingness is MNAR
+    (missing not at random). A propensity model can only be fit on OBSERVED
+    features, so inverse-propensity weighting corrects the part of selection that
+    features can explain, and UNDER-corrects the outcome-driven part. Full
+    correction needs a Heckman-type selection model with a return proxy /
+    instrument. We show all three numbers so the client sees the honest gap.
     Grounded in Korteweg, Kraussl & Verwijmeren (RFS 2016): correcting selection
     cut art returns ~8.7% -> 6.3% and Sharpe ~0.27 -> 0.11.
     """
     X, _, log_roi, names, meta = synthetic_auctions(n=8000, seed=seed, hurdle=hurdle)
 
-    # Resale probability rises with realized return (winners resell) + rarity.
+    # TRUE resale process is MNAR: it depends on the realized return (winners
+    # resell) plus an observable feature (rarity). The return term is what makes
+    # this hard - it is not in the feature set available at the decision point.
     rng = np.random.default_rng(seed + 1)
     rarity = X[:, 5]
-    p_resold = 1.0 / (1.0 + np.exp(-(-1.4 + 2.2 * log_roi + 1.0 * rarity)))
-    resold = (rng.uniform(size=len(log_roi)) < p_resold).astype(int)
+    p_true = 1.0 / (1.0 + np.exp(-(-1.4 + 2.2 * log_roi + 1.0 * rarity)))
+    resold = (rng.uniform(size=len(log_roi)) < p_true).astype(int)
 
     resold_frac = resold.mean()
     naive = log_roi[resold == 1].mean()                 # what a naive study sees
     true_pop = log_roi.mean()                            # the real population mean
 
-    # Inverse-propensity-weighted correction (fit P(resold) on features only).
-    from math import isfinite
-    w = 1.0 / np.clip(p_resold[resold == 1], 0.02, 1.0)
-    ipw = np.average(log_roi[resold == 1], weights=w)
+    # HONEST correction: fit P(resold) on OBSERVED FEATURES ONLY (never the
+    # outcome). This is all a real analyst can do.
+    from sklearn.linear_model import LogisticRegression
+    clf = LogisticRegression(max_iter=1000)
+    clf.fit(X, resold)
+    p_hat = clf.predict_proba(X)[:, 1]
+    w = 1.0 / np.clip(p_hat[resold == 1], 0.02, 1.0)
+    ipw_features = np.average(log_roi[resold == 1], weights=w)
 
     print("\n=== 5. Selection / survivorship bias (the #1 killer) ===")
-    print(f"  Resold fraction (the observable subset) = {resold_frac:.1%}")
-    print(f"  Naive mean net log-ROI on resold-only    = {naive:+.4f}  <- biased UP")
-    print(f"  IPW-corrected mean net log-ROI           = {ipw:+.4f}")
-    print(f"  True population mean net log-ROI         = {true_pop:+.4f}")
-    print(f"  Survivorship premium removed by correction = {naive - ipw:+.4f}")
-    print("  Lesson: never train/score only on assets that resold; model P(resold)")
-    print("  as a first stage and report uncorrected vs corrected ROI both.")
+    print(f"  Resold fraction (the observable subset)      = {resold_frac:.1%}")
+    print(f"  Naive mean net log-ROI on resold-only         = {naive:+.4f}  <- biased UP")
+    print(f"  IPW (features-only propensity) corrected      = {ipw_features:+.4f}")
+    print(f"  True population mean net log-ROI              = {true_pop:+.4f}")
+    print(f"  Bias still remaining after features-only IPW  = {ipw_features - true_pop:+.4f}")
+    print("  Honest read: selection here is on the OUTCOME (MNAR), so a")
+    print("  features-only propensity under-corrects. Report uncorrected AND")
+    print("  corrected both, and use a Heckman selection model (return proxy /")
+    print("  instrument) for the outcome-driven part. Never train/score only on")
+    print("  resold assets and never claim survivorship bias is cleanly solved.")
 
 
 def main():
